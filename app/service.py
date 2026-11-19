@@ -16,9 +16,20 @@ from .audio import (
     parse_wav,
     validate_reference,
 )
+from .identification import (
+    IdentificationError,
+    calibrate_molds,
+    extract_impact_profile,
+    identify_mold,
+)
 from .matching import align_impacts
 
 MAX_UPLOAD_BYTES = 16_000 * 2 * 8 + 4096  # 8 秒 16k/16bit/单声道 + WAV 头余量
+MOLD_ID_MIN = 2
+MOLD_ID_MAX = 4
+MOLD_ID_NAME_MAX = 32
+SAMPLES_PER_MOLD = 3
+_MOLD_ID_BAD = set('/\\:*?"<>| \t\n\r')
 
 
 class Store:
@@ -28,6 +39,7 @@ class Store:
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._last_result: dict[str, Any] | None = None
+        self._last_identification: dict[str, Any] | None = None
 
     def _save_wav(self, raw: bytes, prefix: str) -> str:
         digest = hashlib.sha256(raw).hexdigest()[:16]
@@ -156,3 +168,135 @@ class Store:
     def clear(self) -> None:
         with self._lock:
             self._last_result = None
+
+    # ---------------- 模具辨认 ----------------
+
+    @staticmethod
+    def _validate_mold_payload(
+        mold_ids: list[str], samples: dict[str, list[bytes]], unknown_raw: bytes
+    ) -> None:
+        if not (MOLD_ID_MIN <= len(mold_ids) <= MOLD_ID_MAX):
+            raise IdentificationError(
+                f"需输入 {MOLD_ID_MIN}～{MOLD_ID_MAX} 个模具编号，"
+                f"当前为 {len(mold_ids)} 个"
+            )
+        if len(set(mold_ids)) != len(mold_ids):
+            raise IdentificationError("模具编号存在重复，请去重后重试")
+        for mold in mold_ids:
+            if not mold or not mold.strip():
+                raise IdentificationError("模具编号不能为空")
+            if len(mold) > MOLD_ID_NAME_MAX or any(
+                ch in _MOLD_ID_BAD for ch in mold
+            ):
+                raise IdentificationError(
+                    f"模具编号「{mold}」不合法：长度不超过 {MOLD_ID_NAME_MAX} "
+                    "个字符，且不能包含路径分隔符、空白或 :*?\"<>|"
+                )
+        for mold in mold_ids:
+            n = len(samples.get(mold, []))
+            if n != SAMPLES_PER_MOLD:
+                raise IdentificationError(
+                    f"模具 {mold} 需上传 {SAMPLES_PER_MOLD} 段已确认正常的"
+                    f"样音，当前为 {n} 段"
+                )
+        if not unknown_raw:
+            raise IdentificationError("待辨认完整循环录音为空")
+
+    @staticmethod
+    def _safe_prefix(mold: str) -> str:
+        return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in mold)
+
+    def identify_molds(
+        self,
+        mold_ids: list[str],
+        samples: dict[str, list[bytes]],
+        unknown_raw: bytes,
+    ) -> dict[str, Any]:
+        """完整的模具辨认流程；任何校验失败都不写入已保存的辨认结果。"""
+        self._validate_mold_payload(mold_ids, samples, unknown_raw)
+
+        # 1. 全部解析与指纹提取，任一段不合格直接抛错，不触碰已存结果
+        profiles: dict[str, list] = {}
+        saved_samples: dict[str, list[str]] = {}
+        for mold in mold_ids:
+            mold_profiles = []
+            mold_urls = []
+            for idx, raw in enumerate(samples[mold]):
+                wav_samples = parse_wav(raw)
+                det = detect_impacts(wav_samples)
+                if not det.times:
+                    raise IdentificationError(
+                        f"模具 {mold} 的样音 {idx + 1} 未检测到任何冲击，"
+                        "无法提取冲击频谱，请更换样音"
+                    )
+                mold_profiles.append(extract_impact_profile(wav_samples, det.times))
+                mold_urls.append(
+                    self._save_wav(raw, f"mold_{self._safe_prefix(mold)}_{idx + 1}")
+                )
+            profiles[mold] = mold_profiles
+            saved_samples[mold] = mold_urls
+
+        unknown_samples = parse_wav(unknown_raw)
+        unknown_det = detect_impacts(unknown_samples)
+        if not unknown_det.times:
+            raise IdentificationError(
+                "待辨认录音未检测到任何冲击，无法提取冲击频谱"
+            )
+        unknown_profile = extract_impact_profile(
+            unknown_samples, unknown_det.times
+        )
+        unknown_url = self._save_wav(unknown_raw, "mold_unknown")
+
+        # 2. 留一法校准各模具匹配范围
+        calibrations = calibrate_molds(profiles)
+
+        # 3. 待辨录音对所有模具比较并做出放行/失败决策
+        decision = identify_mold(unknown_profile, profiles, calibrations)
+
+        result = {
+            "id": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "decision": decision["decision"],
+            "identified_mold": decision["identified_mold"],
+            "reason": decision["reason"],
+            "reason_code": decision["reason_code"],
+            "unique": decision["unique"],
+            "margin": decision["margin"],
+            "mold_ids": list(mold_ids),
+            "unknown": {
+                "url": unknown_url,
+                "duration": round(unknown_det.duration, 4),
+                "impact_count": len(unknown_det.times),
+            },
+            "molds": [
+                {
+                    "mold_id": mold,
+                    "sample_urls": saved_samples[mold],
+                    "loo_passed": calibrations[mold].loo_passed,
+                    "matching_range": {
+                        "low": round(calibrations[mold].range_low, 4),
+                        "high": round(calibrations[mold].range_high, 4),
+                    },
+                    "failures": list(calibrations[mold].failures),
+                }
+                for mold in mold_ids
+            ],
+            "ranking": decision["ranking"],
+            "scores": decision["scores"],
+            "calibration": decision["calibration"],
+        }
+        with self._lock:
+            self._last_identification = result
+        return result
+
+    def get_last_identification(self) -> dict[str, Any] | None:
+        with self._lock:
+            return (
+                None
+                if self._last_identification is None
+                else dict(self._last_identification)
+            )
+
+    def clear_identification(self) -> None:
+        with self._lock:
+            self._last_identification = None

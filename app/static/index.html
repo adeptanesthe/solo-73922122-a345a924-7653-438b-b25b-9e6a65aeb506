@@ -79,14 +79,56 @@
   .empty { color: var(--muted); }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
   @media (max-width: 820px) { .upload-grid, .two-col { grid-template-columns: 1fr; } }
+  .tabs { display: flex; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
+  .tab-btn {
+    background: var(--panel); color: var(--muted); border: 1px solid var(--line);
+    border-radius: 999px; padding: 9px 22px; font-size: 14px; font-weight: 700;
+  }
+  .tab-btn.active { color: var(--text); border-color: var(--info); }
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+  .mold-card {
+    border: 1px solid var(--line); border-radius: 8px; padding: 14px;
+    margin-bottom: 12px; background: var(--bg);
+  }
+  .mold-card h4 { margin: 0 0 10px; font-size: 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .mold-card input[type=text] {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    color: var(--text); padding: 7px 10px; width: 160px;
+  }
+  .mold-samples { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .mold-samples label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .mold-samples input[type=file] { padding: 8px; font-size: 12px; }
+  .pill { font-size: 12px; padding: 2px 10px; border-radius: 999px; font-weight: 700; }
+  .pill.pass { background: rgba(46,204,113,.15); color: var(--ok); border: 1px solid var(--ok); }
+  .pill.fail { background: rgba(231,76,60,.15); color: var(--bad); border: 1px solid var(--bad); }
+  .pill.identified { background: rgba(74,168,255,.15); color: var(--info); border: 1px solid var(--info); }
+  .badge.identified { background: rgba(74,168,255,.15); color: var(--info); border: 1px solid var(--info); }
+  .badge.failed { background: rgba(243,156,18,.15); color: var(--warn); border: 1px solid var(--warn); }
+  .ref-pick-btn {
+    background: var(--ok); color: #062314; border: 0; border-radius: 6px;
+    padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer;
+  }
+  .ref-pick-btn:disabled { opacity: .45; cursor: not-allowed; }
+  details.loo { margin-top: 8px; }
+  details.loo summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .mini-table { font-size: 12px; margin-top: 6px; }
+  .mini-table th, .mini-table td { padding: 4px 8px; }
+  .range-hint { color: var(--muted); font-size: 12px; }
 </style>
 </head>
 <body>
 <header>
   <h1>冲压机冲次声音核对</h1>
-  <p>上传正常循环与待检循环录音（16 kHz / 16-bit PCM / 单声道 WAV，≤ 8 秒），系统按参考节奏自动核对漏冲与多冲。点击波形或表格时刻可定位播放。</p>
+  <p>上传正常循环与待检循环录音（16 kHz / 16-bit PCM / 单声道 WAV，≤ 8 秒），系统按参考节奏自动核对漏冲与多冲。点击波形或表格时刻可定位播放。换模后两种模具节拍相同、听录音容易选错参考时，可在「辨认模具」页按冲击频谱辨认模具，再把确认样音填为核对参考。</p>
 </header>
 <main>
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="inspect">冲次核对</button>
+    <button class="tab-btn" data-tab="identify">辨认模具</button>
+  </div>
+
+  <div class="tab-pane active" id="pane-inspect">
   <section class="panel">
     <div class="upload-grid">
       <div class="upload-box">
@@ -164,6 +206,59 @@
     </div>
     <p class="empty" style="margin-top:14px">说明：每次漏冲只标注对应参考冲次，后续冲次按参考序号继续对齐，不会整体错位；40ms 内回声已在检测阶段剔除，不计多冲。</p>
   </section>
+  </div><!-- /pane-inspect -->
+
+  <div class="tab-pane" id="pane-identify">
+    <section class="panel">
+      <h3 style="font-size:15px">辨认模具（按冲击频谱）</h3>
+      <p class="range-hint" style="margin:0 0 14px">
+        输入 2～4 个模具编号，每种上传 <b>3 段已确认正常的样音</b>，再上传 1 段<b>待辨认的完整循环</b>。
+        系统对每段录音提取冲击频谱（对整体音量与起始静音不敏感），先轮流留出一段样音做留一验证并校准各模具的匹配范围，再辨认待辨录音。
+      </p>
+      <div class="row" style="margin:0 0 12px">
+        <button id="addMoldBtn" type="button">＋ 增加模具</button>
+        <button id="removeMoldBtn" type="button" class="tab-btn" style="padding:9px 18px">－ 移除最后一个</button>
+        <span class="range-hint" id="moldCountHint"></span>
+      </div>
+      <div id="moldCards"></div>
+      <div class="upload-box" style="margin-top:6px">
+        <label for="unknownFile">待辨认的完整循环录音（1 段 WAV，可有起始静音、整体音量变化）</label>
+        <input id="unknownFile" type="file" accept=".wav,audio/wav" />
+        <div class="hint" id="unknownHint"></div>
+      </div>
+      <div class="row">
+        <button id="identifyBtn" disabled>开始辨认</button>
+        <span id="identifyBusy" class="empty" style="display:none">分析中…</span>
+      </div>
+    </section>
+
+    <div id="identifyError" style="display:none"></div>
+
+    <section id="identifyResultPanel" class="panel" style="display:none">
+      <div class="verdict">
+        <h2 style="margin:0;font-size:17px">辨认结论</h2>
+        <span id="identifyBadge" class="badge identified"></span>
+      </div>
+      <p id="identifyReason" style="margin:12px 0 0"></p>
+      <div id="identifiedAction" style="display:none;margin-top:14px">
+        <p class="range-hint" style="margin:0 0 8px">
+          待辨录音唯一匹配且该模具通过留一验证。可选取该模具的一段样音，填入「冲次核对」页作为参考录音：
+        </p>
+        <div id="samplePickRow" class="row" style="margin-top:4px"></div>
+      </div>
+      <h3 style="margin-top:18px">各模具匹配情况</h3>
+      <table id="rankingTable">
+        <thead><tr><th>排名</th><th>模具编号</th><th>冲击频谱相似度</th><th>留一验证</th><th>校准匹配范围</th><th>是否在范围内</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <h3 style="margin-top:18px">留一验证明细（轮流留出 1 段样音，用其余样音辨认）</h3>
+      <div id="looDetail"></div>
+      <p class="range-hint" style="margin-top:12px">
+        说明：某模具的样音只要有一段被错认或归属不明，该模具仍参与比较，但<b>不能被推荐</b>；
+        辨认失败时上一次辨认结果与当前核对参考均保留不变。
+      </p>
+    </section>
+  </div><!-- /pane-identify -->
 </main>
 
 <script>
@@ -396,6 +491,227 @@ async function loadPeaks(url, duration, canvasId, audioId, impacts, extraMarkers
       render(r);
     }
   } catch (_) { /* 首次访问无结果，忽略 */ }
+})();
+
+// ================= 模具辨认 =================
+const MIN_MOLDS = 2, MAX_MOLDS = 3 + 1, SAMPLES = 3;
+let moldCount = MIN_MOLDS;
+let identifyState = null;
+
+document.querySelectorAll(".tab-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    document.querySelectorAll(".tab-pane").forEach((p) =>
+      p.classList.toggle("active", p.id === "pane-" + btn.dataset.tab));
+  });
+});
+
+function moldCardHtml(idx) {
+  const sampleInputs = Array.from({ length: SAMPLES }, (_, k) => `
+    <div>
+      <label>样音 ${k + 1}（已确认正常）</label>
+      <input type="file" accept=".wav,audio/wav" data-role="sample" data-mold="${idx}" data-sample="${k + 1}" />
+    </div>`).join("");
+  return `
+  <div class="mold-card" data-card="${idx}">
+    <h4>模具 ${idx + 1}：
+      <input type="text" data-role="mold-id" placeholder="输入模具编号" maxlength="32" />
+      <span data-role="loo-pill"></span>
+    </h4>
+    <div class="mold-samples">${sampleInputs}</div>
+  </div>`;
+}
+
+function renderMoldCards() {
+  const wrap = $("moldCards");
+  wrap.innerHTML = Array.from({ length: moldCount }, (_, i) => moldCardHtml(i)).join("");
+  $("moldCountHint").textContent = `当前 ${moldCount} 个模具（允许 ${MIN_MOLDS}～${MAX_MOLDS} 个，每个 ${SAMPLES} 段样音）`;
+  $("addMoldBtn").disabled = moldCount >= MAX_MOLDS;
+  $("removeMoldBtn").disabled = moldCount <= MIN_MOLDS;
+  wrap.querySelectorAll("input").forEach((el) => el.addEventListener("change", refreshIdentifyBtn));
+  refreshIdentifyBtn();
+}
+
+function collectIdentifyForm() {
+  const cards = [...document.querySelectorAll("#moldCards .mold-card")];
+  const moldIds = [];
+  const form = new FormData();
+  for (const card of cards) {
+    const id = card.querySelector('[data-role="mold-id"]').value.trim();
+    if (!id) return { error: "每个模具都需要填写模具编号" };
+    if (moldIds.includes(id)) return { error: `模具编号「${id}」重复，请去重` };
+    moldIds.push(id);
+    form.append("mold_ids", id);
+    for (let k = 1; k <= SAMPLES; k++) {
+      const input = card.querySelector(`[data-sample="${k}"]`);
+      const file = input.files[0];
+      if (!file) return { error: `模具 ${id} 缺少样音 ${k}` };
+      form.append(`sample_${id}_${k}`, file);
+    }
+  }
+  const unknown = $("unknownFile").files[0];
+  if (!unknown) return { error: "请上传待辨认的完整循环录音" };
+  form.append("unknown", unknown);
+  return { form };
+}
+
+function refreshIdentifyBtn() {
+  const cards = document.querySelectorAll("#moldCards .mold-card").length;
+  let ready = cards >= MIN_MOLDS && !!$("unknownFile").files[0];
+  if (ready) {
+    document.querySelectorAll('#moldCards input[type="text"]').forEach((i) => {
+      if (!i.value.trim()) ready = false;
+    });
+    document.querySelectorAll('#moldCards input[type="file"]').forEach((i) => {
+      if (!i.files[0]) ready = false;
+    });
+  }
+  $("identifyBtn").disabled = !ready;
+}
+
+$("addMoldBtn").addEventListener("click", () => {
+  if (moldCount < MAX_MOLDS) { moldCount++; renderMoldCards(); }
+});
+$("removeMoldBtn").addEventListener("click", () => {
+  if (moldCount > MIN_MOLDS) { moldCount--; renderMoldCards(); }
+});
+$("unknownFile").addEventListener("change", () => {
+  $("unknownHint").textContent = $("unknownFile").files[0]?.name ?? "";
+  refreshIdentifyBtn();
+});
+
+$("identifyBtn").addEventListener("click", async () => {
+  const collected = collectIdentifyForm();
+  const errEl = $("identifyError");
+  errEl.style.display = "none";
+  if (collected.error) { showIdentifyError(collected.error); return; }
+
+  $("identifyBusy").style.display = "inline";
+  $("identifyBtn").disabled = true;
+  try {
+    const resp = await fetch("/api/identify-molds", { method: "POST", body: collected.form });
+    const payload = await resp.json();
+    if (!resp.ok) {
+      showIdentifyError(payload.detail || "辨认失败");
+      return;
+    }
+    identifyState = payload;
+    renderIdentification(payload);
+  } catch (e) {
+    showIdentifyError("请求失败：" + e.message);
+  } finally {
+    $("identifyBusy").style.display = "none";
+    refreshIdentifyBtn();
+  }
+});
+
+function showIdentifyError(msg) {
+  const el = $("identifyError");
+  el.className = "";
+  el.style.cssText = "background:#3a1d22;border:1px solid var(--bad);color:#ffb4ab;padding:12px 16px;border-radius:8px;margin-bottom:16px;";
+  el.textContent = "✗ " + msg + "（当前核对参考与上一次辨认结果均保留，未被覆盖）";
+  el.style.display = "block";
+}
+
+function renderIdentification(r) {
+  $("identifyResultPanel").style.display = "block";
+  const badge = $("identifyBadge");
+  if (r.decision === "identified") {
+    badge.className = "badge identified";
+    badge.textContent = `✓ 辨认成功：模具 ${r.identified_mold}`;
+  } else {
+    badge.className = "badge failed";
+    badge.textContent = "✗ 辨认失败，保留当前参考";
+  }
+  $("identifyReason").textContent = r.reason;
+
+  // 唯一匹配且留一通过 -> 允许选择该模具样音回填核对页参考
+  const action = $("identifiedAction");
+  if (r.decision === "identified") {
+    action.style.display = "block";
+    const mold = r.molds.find((m) => m.mold_id === r.identified_mold);
+    $("samplePickRow").innerHTML = mold.sample_urls.map((url, i) => `
+      <button class="ref-pick-btn" data-url="${url}" data-mold="${mold.mold_id}" data-idx="${i + 1}">
+        选用模具 ${mold.mold_id} 样音 ${i + 1} 作为参考
+      </button>`).join("");
+    $("samplePickRow").querySelectorAll(".ref-pick-btn").forEach((btn) => {
+      btn.addEventListener("click", () => pickSampleAsReference(btn.dataset.url, btn.dataset.mold, btn.dataset.idx));
+    });
+  } else {
+    action.style.display = "none";
+  }
+
+  // 相似度排名表
+  const tbody = $("rankingTable").querySelector("tbody");
+  tbody.innerHTML = r.ranking.map((row, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${row.mold_id}${row.mold_id === r.identified_mold ? ' <span class="pill identified">已辨认</span>' : ""}</td>
+      <td>${row.score.toFixed(4)}</td>
+      <td>${row.loo_passed ? '<span class="pill pass">通过</span>' : '<span class="pill fail">未通过</span>'}</td>
+      <td>${r.calibration[row.mold_id].matching_range.low.toFixed(4)} ～ ${r.calibration[row.mold_id].matching_range.high.toFixed(4)}</td>
+      <td>${row.within_range ? "是" : "否"}</td>
+    </tr>`).join("");
+
+  // 留一明细
+  $("looDetail").innerHTML = r.mold_ids.map((moldId) => {
+    const cal = r.calibration[moldId];
+    const head = `
+      <div class="mold-card">
+        <h4>模具 ${moldId}
+          <span class="pill ${cal.loo_passed ? "pass" : "fail"}">${cal.loo_passed ? "留一验证通过" : "留一验证未通过"}</span>
+          <span class="range-hint">匹配范围 ${cal.matching_range.low.toFixed(4)} ～ ${cal.matching_range.high.toFixed(4)}</span>
+        </h4>
+        ${cal.failures.length ? `<p style="color:#ffb4ab;margin:4px 0;font-size:13px">${cal.failures.map((f) => "⚠ " + f).join("<br>")}</p>` : ""}
+        <details class="loo">
+          <summary>查看 ${cal.folds.length} 折留一明细</summary>
+          <table class="mini-table">
+            <thead><tr><th>留出样音</th><th>辨认结果</th><th>本模具自相似度</th><th>是否唯一/正确</th></tr></thead>
+            <tbody>
+              ${cal.folds.map((f) => `
+                <tr>
+                  <td>第 ${f.held_out} 段</td>
+                  <td>${f.predicted_mold ? "模具 " + f.predicted_mold : "归属不明"}</td>
+                  <td>${f.self_similarity.toFixed(4)}</td>
+                  <td>${f.unique ? (f.correct ? '<span style="color:var(--ok)">正确</span>' : '<span style="color:var(--bad)">错认</span>') : '<span style="color:var(--warn)">不唯一</span>'}</td>
+                </tr>`).join("")}
+            </tbody>
+          </table>
+        </details>
+      </div>`;
+    return head;
+  }).join("");
+}
+
+// 将选定样音抓取为 File 并填入「冲次核对」页的参考录音输入，随后切回该页
+async function pickSampleAsReference(url, moldId, idx) {
+  try {
+    const resp = await fetch(url + "?pick=" + Date.now());
+    if (!resp.ok) throw new Error("样音读取失败");
+    const blob = await resp.blob();
+    const file = new File([blob], `mold_${moldId}_sample${idx}.wav`, { type: "audio/wav" });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    $("refFile").files = dt.files;
+    $("refFile").dispatchEvent(new Event("change", { bubbles: true }));
+    document.querySelector('.tab-btn[data-tab="inspect"]').click();
+    $("refFile").scrollIntoView({ behavior: "smooth", block: "center" });
+  } catch (e) {
+    showIdentifyError("回填参考失败：" + e.message);
+  }
+}
+
+renderMoldCards();
+
+// 进入页面时尝试恢复上一次辨认结果
+(async () => {
+  try {
+    const resp = await fetch("/api/identification/last");
+    if (resp.ok) {
+      identifyState = await resp.json();
+      renderIdentification(identifyState);
+    }
+  } catch (_) { /* 无历史辨认结果，忽略 */ }
 })();
 </script>
 </body>
